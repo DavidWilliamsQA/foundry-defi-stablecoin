@@ -15,6 +15,7 @@ contract DSCEngineTest is Test {
     HelperConfig helperConfig;
     address ethUsdPriceFeed;
     address weth;
+    address btcUsdPriceFeed;
 
     address public USER = makeAddr("user");
     uint256 public constant AMOUNT_COLLATERAL = 10 ether;
@@ -23,8 +24,26 @@ contract DSCEngineTest is Test {
     function setUp() public {
         deployer = new DeployDSC();
         (dsc, engine, helperConfig) = deployer.run();
-        (ethUsdPriceFeed, , weth, , ) = helperConfig.activeNetworkConfig();
+        (ethUsdPriceFeed, btcUsdPriceFeed, weth, , ) = helperConfig
+            .activeNetworkConfig();
         ERC20Mock(weth).mint(USER, STARTING_ERC20_BALANCE);
+    }
+
+    address[] public tokenAddresses;
+    address[] public priceFeedAddresses;
+
+    function testRevertsIfTokenLengthDoesNotMatchPriceFeeds() public {
+        tokenAddresses.push(weth);
+        priceFeedAddresses.push(ethUsdPriceFeed);
+        priceFeedAddresses.push(btcUsdPriceFeed);
+
+        vm.expectRevert(
+            DSCEngine
+                .DSCEngine__TokenAddressesAndPriceFeedAddressesMustBeSameLength
+                .selector
+        );
+
+        new DSCEngine(tokenAddresses, priceFeedAddresses, address(dsc));
     }
 
     function testGetUsdValue() public {
@@ -35,11 +54,56 @@ contract DSCEngineTest is Test {
         assertEq(expectedUsd, actualUsd);
     }
 
+    function testGetTokenAmountFromUsd() public {
+        uint256 usdAmount = 100 ether;
+        uint256 expectedWETH = 0.05 ether;
+        uint256 actualWETH = engine.getTokenAmountFromUsd(weth, usdAmount);
+
+        assertEq(expectedWETH, actualWETH);
+    }
+
     function testRevertIfCollateralZero() public {
         vm.startPrank(USER);
         ERC20Mock(weth).approve(address(engine), AMOUNT_COLLATERAL);
         vm.expectRevert(DSCEngine.DSCEngine__NeedsMorethanZero.selector);
         engine.depositCollateral(weth, 0);
         vm.stopPrank();
+    }
+
+    function testRevertIfCollateralNotApproved() public {
+        ERC20Mock token = new ERC20Mock(
+            "Test Token",
+            "TST",
+            USER,
+            AMOUNT_COLLATERAL
+        );
+        vm.startPrank(USER);
+        vm.expectRevert(DSCEngine.DSCEngine__TokenNotAllowed.selector);
+        engine.depositCollateral(address(token), AMOUNT_COLLATERAL);
+        vm.stopPrank();
+    }
+
+    modifier depositedCollateral() {
+        vm.startPrank(USER);
+        ERC20Mock(weth).approve(address(engine), AMOUNT_COLLATERAL);
+        engine.depositCollateral(weth, AMOUNT_COLLATERAL);
+        vm.stopPrank();
+        _;
+    }
+
+    function testDepositCollateralAndGetAccountInfo()
+        public
+        depositedCollateral
+    {
+        (uint256 totalMinted, uint256 collateralValueInUsd) = engine
+            .getAccountInformation(USER);
+
+        uint256 expectedMinted = 0;
+        uint256 expectedDepositedAmount = engine.getTokenAmountFromUsd(
+            weth,
+            collateralValueInUsd
+        );
+        assertEq(expectedDepositedAmount, AMOUNT_COLLATERAL);
+        assertEq(expectedMinted, totalMinted);
     }
 }
